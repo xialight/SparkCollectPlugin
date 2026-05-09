@@ -1,0 +1,8 @@
+[env]
+# Base URL of your Cloudflare Worker — no trailing slash.
+# Edit this value, then run: cargo build --release
+#
+# You can also override it per-build without editing this file:
+#   PowerShell:  $env:SPARK_WORKER_URL="https://..."; cargo build --release
+#   bash/zsh:    SPARK_WORKER_URL=https://... cargo build --release
+SPARK_WORKER_URL = "https://domain.com"

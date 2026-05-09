@@ -1,0 +1,29 @@
+[package]
+name = "spark_collect_plugin"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+hachimi_plugin_sdk = { path = "./hachimi_plugin_sdk", version = "*" }
+lazy_static = "1.5.0"
+log = "0.4"
+java-properties = "2.0.0"
+rmpv = "1"
+ureq = { version = "2", features = ["native-tls"] }
+
+[workspace]
+members = [
+    "hachimi_plugin_sdk",
+    "hachimi_plugin_macros",
+    "hachimi_il2cpp",
+    "hachimi_il2cpp_2020",
+]
+resolver = "3"
+
+[features]
+default = ["il2cpp_2020"]
+il2cpp = ["hachimi_plugin_sdk/il2cpp"]
+il2cpp_2020 = ["hachimi_plugin_sdk/il2cpp_2020"]
