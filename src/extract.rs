@@ -100,7 +100,7 @@ pub fn extract_finish_summary(finish_common: &[(Value, Value)]) -> FinishSummary
     let chara_info = map_get(finish_common, "chara_info").unwrap_or(target);
 
     let card_id     = get_i64(chara_info, "card_id");
-    let scenario_id = get_i64(finish_common, "scenario_id");
+    let scenario_id = get_i64(chara_info, "scenario_id");
     let rarity      = get_i64(chara_info, "rarity");
 
     let aptitudes = Some(Aptitudes {
