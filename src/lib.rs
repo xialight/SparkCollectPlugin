@@ -143,7 +143,7 @@ fn process_response(bytes: &[u8]) {
     }
 
     if cfg("debug_raw").as_deref() == Some("true") {
-        debug_save_json(&value);
+        debug_save_json(&rmpv::Value::Map(finish_common.to_vec()));
     }
 
     let token = match cfg("token") {

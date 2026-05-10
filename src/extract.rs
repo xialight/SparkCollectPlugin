@@ -4,15 +4,23 @@ use rmpv::Value;
 
 pub struct FinishSummary {
     pub card_id:          Option<i64>,
+    pub scenario_id:      Option<i64>,
+    pub rarity:           Option<i64>,
+    pub aptitudes:        Option<Aptitudes>,
     pub stats:            Option<Stats>,
     pub rank:             Option<String>,
     pub rating:           Option<i64>,
     pub races:            Option<i64>,
     pub wins:             Option<i64>,
-    pub stat_spark:       Option<SparkEntry>,     // first blue (stat) spark
-    pub aptitude_spark:   Option<SparkEntry>,     // first pink (aptitude) spark
-    pub unique_spark:     Option<SparkEntry>,     // first green (character factor) spark
-    pub skill_sparks:     Vec<SkillSparkEntry>,   // all white sparks (race / skill / scenario)
+    pub stat_spark:       Option<SparkEntry>,
+    pub aptitude_spark:   Option<SparkEntry>,
+    pub unique_spark:     Option<SparkEntry>,
+    pub skill_sparks:     Vec<SkillSparkEntry>,
+    pub skill_array:      Vec<SkillEntry>,
+    pub support_cards:    Vec<SupportCard>,
+    pub race_results:     Vec<RaceResult>,
+    pub win_saddle_ids:   Vec<i64>,
+    pub parents:          Vec<Parent>,
 }
 
 pub struct Stats {
@@ -21,6 +29,19 @@ pub struct Stats {
     pub power:   i64,
     pub guts:    i64,
     pub wit:     i64,
+}
+
+pub struct Aptitudes {
+    pub short:       Option<i64>,
+    pub mile:        Option<i64>,
+    pub middle:      Option<i64>,
+    pub long:        Option<i64>,
+    pub front:       Option<i64>,
+    pub pace:        Option<i64>,
+    pub late:        Option<i64>,
+    pub end:         Option<i64>,
+    pub turf:        Option<i64>,
+    pub dirt:        Option<i64>,
 }
 
 pub struct SparkEntry {
@@ -32,6 +53,35 @@ pub struct SkillSparkEntry {
     pub spark_type: &'static str,  // "race" | "skill" | "scenario"
     pub spark_id:   i64,
     pub stars:      i64,
+}
+
+pub struct SkillEntry {
+    pub skill_id: i64,
+    pub level:    Option<i64>,
+}
+
+pub struct SupportCard {
+    pub position:          i64,
+    pub support_card_id:   i64,
+    pub exp:               Option<i64>,
+    pub limit_break_count: Option<i64>,
+}
+
+pub struct RaceResult {
+    pub turn:        Option<i64>,
+    pub program_id:  i64,
+    pub result_rank: Option<i64>,
+}
+
+pub struct Parent {
+    pub position_id:    i64,
+    pub card_id:        Option<i64>,
+    pub rank:           Option<String>,
+    pub stat_spark:     Option<SparkEntry>,
+    pub aptitude_spark: Option<SparkEntry>,
+    pub unique_spark:   Option<SparkEntry>,
+    pub skill_sparks:   Vec<SkillSparkEntry>,
+    pub win_saddle_ids: Vec<i64>,
 }
 
 // ── Entry points ─────────────────────────────────────────────────────────────
@@ -49,7 +99,22 @@ pub fn extract_finish_summary(finish_common: &[(Value, Value)]) -> FinishSummary
 
     let chara_info = map_get(finish_common, "chara_info").unwrap_or(target);
 
-    let card_id = get_i64(chara_info, "card_id");
+    let card_id     = get_i64(chara_info, "card_id");
+    let scenario_id = get_i64(finish_common, "scenario_id");
+    let rarity      = get_i64(chara_info, "rarity");
+
+    let aptitudes = Some(Aptitudes {
+        short:  get_i64(chara_info, "proper_distance_short"),
+        mile:   get_i64(chara_info, "proper_distance_mile"),
+        middle: get_i64(chara_info, "proper_distance_middle"),
+        long:   get_i64(chara_info, "proper_distance_long"),
+        front:  get_i64(chara_info, "proper_running_style_nige"),
+        pace:   get_i64(chara_info, "proper_running_style_senko"),
+        late:   get_i64(chara_info, "proper_running_style_sashi"),
+        end:    get_i64(chara_info, "proper_running_style_oikomi"),
+        turf:   get_i64(chara_info, "proper_ground_turf"),
+        dirt:   get_i64(chara_info, "proper_ground_dirt"),
+    });
 
     let stats = {
         let speed   = get_i64(chara_info, "speed");
@@ -103,7 +168,97 @@ pub fn extract_finish_summary(finish_common: &[(Value, Value)]) -> FinishSummary
         }
     }
 
-    FinishSummary { card_id, stats, rank, rating, races, wins, stat_spark, aptitude_spark, unique_spark, skill_sparks }
+    let skill_array    = extract_skill_array(target);
+    let support_cards  = extract_support_cards(target);
+    let race_results   = extract_race_results(race_list);
+    let win_saddle_ids = extract_i64_array(target, "win_saddle_id_array");
+    let parents        = extract_parents(target);
+
+    FinishSummary {
+        card_id, scenario_id, rarity, aptitudes,
+        stats, rank, rating, races, wins,
+        stat_spark, aptitude_spark, unique_spark, skill_sparks,
+        skill_array, support_cards, race_results, win_saddle_ids, parents,
+    }
+}
+
+// ── Sub-extractors ────────────────────────────────────────────────────────────
+
+fn extract_skill_array(target: &[(Value, Value)]) -> Vec<SkillEntry> {
+    let Some(arr) = get_array(target, "skill_array") else { return Vec::new() };
+    arr.iter().filter_map(|item| {
+        let m = match item { Value::Map(m) => m.as_slice(), _ => return None };
+        let skill_id = get_i64(m, "skill_id")?;
+        let level    = get_i64(m, "level");
+        Some(SkillEntry { skill_id, level })
+    }).collect()
+}
+
+fn extract_support_cards(target: &[(Value, Value)]) -> Vec<SupportCard> {
+    let Some(arr) = get_array(target, "support_card_list") else { return Vec::new() };
+    arr.iter().filter_map(|item| {
+        let m = match item { Value::Map(m) => m.as_slice(), _ => return None };
+        let position        = get_i64(m, "position")?;
+        let support_card_id = get_i64(m, "support_card_id")?;
+        let exp               = get_i64(m, "exp");
+        let limit_break_count = get_i64(m, "limit_break_count");
+        Some(SupportCard { position, support_card_id, exp, limit_break_count })
+    }).collect()
+}
+
+fn extract_race_results(race_list: &[Value]) -> Vec<RaceResult> {
+    race_list.iter().filter_map(|item| {
+        let m = match item { Value::Map(m) => m.as_slice(), _ => return None };
+        let program_id  = get_i64(m, "program_id")?;
+        let turn        = get_i64(m, "turn");
+        let result_rank = get_i64(m, "result_rank");
+        Some(RaceResult { turn, program_id, result_rank })
+    }).collect()
+}
+
+fn extract_i64_array(entries: &[(Value, Value)], key: &str) -> Vec<i64> {
+    get_array(entries, key)
+        .map(|arr| arr.iter().filter_map(val_i64).collect())
+        .unwrap_or_default()
+}
+
+fn extract_parents(target: &[(Value, Value)]) -> Vec<Parent> {
+    let Some(arr) = get_array(target, "succession_chara_array") else { return Vec::new() };
+    arr.iter().filter_map(|item| {
+        let m = match item { Value::Map(m) => m.as_slice(), _ => return None };
+        let position_id = get_i64(m, "position_id")?;
+        let card_id     = get_i64(m, "card_id");
+        let rank        = get_i64(m, "rank").and_then(rank_label);
+
+        let mut stat_spark:     Option<SparkEntry>   = None;
+        let mut aptitude_spark: Option<SparkEntry>   = None;
+        let mut unique_spark:   Option<SparkEntry>   = None;
+        let mut skill_sparks:   Vec<SkillSparkEntry> = Vec::new();
+
+        if let Some(ids) = get_array(m, "factor_id_array") {
+            for id_val in ids {
+                if let Some(id) = val_i64(id_val) {
+                    match categorize_factor(id) {
+                        Factor::Stat { name, stars } if stat_spark.is_none() => {
+                            stat_spark = Some(SparkEntry { name: name.into(), stars });
+                        }
+                        Factor::Aptitude { name, stars } if aptitude_spark.is_none() => {
+                            aptitude_spark = Some(SparkEntry { name: name.into(), stars });
+                        }
+                        Factor::Unique { stars } if unique_spark.is_none() => {
+                            unique_spark = Some(SparkEntry { name: "Character Factor".into(), stars });
+                        }
+                        Factor::Skill(entry) => skill_sparks.push(entry),
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        let win_saddle_ids = extract_i64_array(m, "win_saddle_id_array");
+
+        Some(Parent { position_id, card_id, rank, stat_spark, aptitude_spark, unique_spark, skill_sparks, win_saddle_ids })
+    }).collect()
 }
 
 // ── Factor decoding ───────────────────────────────────────────────────────────
