@@ -1,6 +1,6 @@
 [package]
 name = "spark_collect_plugin"
-version = "0.1.0"
+version = "2.0.0"
 edition = "2021"
 
 [lib]
@@ -24,6 +24,7 @@ members = [
 resolver = "3"
 
 [features]
-default = ["il2cpp_2020"]
+# Game moved to Unity 2022.3.62f2 (64-bit) — was 2020.3.24f1 (32-bit).
+default = ["il2cpp"]
 il2cpp = ["hachimi_plugin_sdk/il2cpp"]
 il2cpp_2020 = ["hachimi_plugin_sdk/il2cpp_2020"]

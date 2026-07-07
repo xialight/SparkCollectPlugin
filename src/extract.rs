@@ -44,11 +44,13 @@ pub struct Aptitudes {
     pub dirt:        Option<i64>,
 }
 
+#[derive(Clone)]
 pub struct SparkEntry {
     pub name:  String,
     pub stars: i64,
 }
 
+#[derive(Clone, Copy)]
 pub struct SkillSparkEntry {
     pub spark_type: &'static str,  // "race" | "skill" | "scenario"
     pub spark_id:   i64,
@@ -84,11 +86,40 @@ pub struct Parent {
     pub win_saddle_ids: Vec<i64>,
 }
 
+/// Decoded output of walking a list of raw `factor_id` ints through
+/// `categorize_factor`. Shared by the finish-run path (`factor_id_array`,
+/// bare ints) and the spark-reroll path (`factor_info_array`, `{factor_id}`
+/// maps) — the two paths differ only in how the ids are pulled off the wire,
+/// not in how they're categorized.
+#[derive(Default)]
+pub struct SparkBreakdown {
+    pub stat_spark:     Option<SparkEntry>,
+    pub aptitude_spark: Option<SparkEntry>,
+    pub unique_spark:   Option<SparkEntry>,
+    pub skill_sparks:   Vec<SkillSparkEntry>,
+}
+
+/// One candidate spark list from a `factor_select_info_array` entry within a
+/// `single_mode_factor_lottery_common` packet (one reroll result).
+pub struct FactorListEntry {
+    pub lottery_id: Option<i64>,
+    pub sparks:     SparkBreakdown,
+}
+
 // ── Entry points ─────────────────────────────────────────────────────────────
 
 pub fn find_finish_common<'a>(entries: &'a [(Value, Value)]) -> Option<&'a [(Value, Value)]> {
     map_get(entries, "single_mode_finish_common")
         .or_else(|| map_get(entries, "data").and_then(|d| map_get(d, "single_mode_finish_common")))
+}
+
+/// The result of a single reroll action. (`single_mode_factor_select_common`,
+/// the original pre-reroll list, is deliberately NOT tracked — its spark list
+/// always reappears as one of this packet's entries, so it's pure duplicate
+/// data.)
+pub fn find_factor_lottery_common<'a>(entries: &'a [(Value, Value)]) -> Option<&'a [(Value, Value)]> {
+    map_get(entries, "single_mode_factor_lottery_common")
+        .or_else(|| map_get(entries, "data").and_then(|d| map_get(d, "single_mode_factor_lottery_common")))
 }
 
 pub fn extract_finish_summary(finish_common: &[(Value, Value)]) -> FinishSummary {
@@ -143,30 +174,7 @@ pub fn extract_finish_summary(finish_common: &[(Value, Value)]) -> FinishSummary
         )
     });
 
-    let mut stat_spark:     Option<SparkEntry>    = None;
-    let mut aptitude_spark: Option<SparkEntry>    = None;
-    let mut unique_spark:   Option<SparkEntry>    = None;
-    let mut skill_sparks:   Vec<SkillSparkEntry>  = Vec::new();
-
-    if let Some(ids) = get_array(target, "factor_id_array") {
-        for id_val in ids {
-            if let Some(id) = val_i64(id_val) {
-                match categorize_factor(id) {
-                    Factor::Stat { name, stars } if stat_spark.is_none() => {
-                        stat_spark = Some(SparkEntry { name: name.into(), stars });
-                    }
-                    Factor::Aptitude { name, stars } if aptitude_spark.is_none() => {
-                        aptitude_spark = Some(SparkEntry { name: name.into(), stars });
-                    }
-                    Factor::Unique { stars } if unique_spark.is_none() => {
-                        unique_spark = Some(SparkEntry { name: "Character Factor".into(), stars });
-                    }
-                    Factor::Skill(entry) => skill_sparks.push(entry),
-                    _ => {}
-                }
-            }
-        }
-    }
+    let breakdown = categorize_factor_ids(extract_factor_ids(target, "factor_info_array").into_iter());
 
     let skill_array    = extract_skill_array(target);
     let support_cards  = extract_support_cards(target);
@@ -175,11 +183,29 @@ pub fn extract_finish_summary(finish_common: &[(Value, Value)]) -> FinishSummary
     let parents        = extract_parents(target);
 
     FinishSummary {
-        card_id, scenario_id, rarity, aptitudes,
-        stats, rank, rating, races, wins,
-        stat_spark, aptitude_spark, unique_spark, skill_sparks,
+        card_id, scenario_id, rarity,
+        stats, aptitudes, rank, rating, races, wins,
+        stat_spark: breakdown.stat_spark,
+        aptitude_spark: breakdown.aptitude_spark,
+        unique_spark: breakdown.unique_spark,
+        skill_sparks: breakdown.skill_sparks,
         skill_array, support_cards, race_results, win_saddle_ids, parents,
     }
+}
+
+/// Reads every candidate spark list out of a `single_mode_factor_select_common` /
+/// `single_mode_factor_lottery_common` packet. Returns one entry per element of
+/// `factor_select_info_array`, even entries whose sparks end up empty — deciding
+/// whether an empty entry is worth submitting is the caller's policy, not this
+/// function's.
+pub fn extract_factor_list(packet: &[(Value, Value)]) -> Vec<FactorListEntry> {
+    let Some(arr) = get_array(packet, "factor_select_info_array") else { return Vec::new() };
+    arr.iter().filter_map(|item| {
+        let m = match item { Value::Map(m) => m.as_slice(), _ => return None };
+        let lottery_id = get_i64(m, "lottery_id");
+        let ids = extract_factor_ids(m, "factor_info_array");
+        Some(FactorListEntry { lottery_id, sparks: categorize_factor_ids(ids.into_iter()) })
+    }).collect()
 }
 
 // ── Sub-extractors ────────────────────────────────────────────────────────────
@@ -230,34 +256,18 @@ fn extract_parents(target: &[(Value, Value)]) -> Vec<Parent> {
         let card_id     = get_i64(m, "card_id");
         let rank        = get_i64(m, "rank").and_then(rank_label);
 
-        let mut stat_spark:     Option<SparkEntry>   = None;
-        let mut aptitude_spark: Option<SparkEntry>   = None;
-        let mut unique_spark:   Option<SparkEntry>   = None;
-        let mut skill_sparks:   Vec<SkillSparkEntry> = Vec::new();
-
-        if let Some(ids) = get_array(m, "factor_id_array") {
-            for id_val in ids {
-                if let Some(id) = val_i64(id_val) {
-                    match categorize_factor(id) {
-                        Factor::Stat { name, stars } if stat_spark.is_none() => {
-                            stat_spark = Some(SparkEntry { name: name.into(), stars });
-                        }
-                        Factor::Aptitude { name, stars } if aptitude_spark.is_none() => {
-                            aptitude_spark = Some(SparkEntry { name: name.into(), stars });
-                        }
-                        Factor::Unique { stars } if unique_spark.is_none() => {
-                            unique_spark = Some(SparkEntry { name: "Character Factor".into(), stars });
-                        }
-                        Factor::Skill(entry) => skill_sparks.push(entry),
-                        _ => {}
-                    }
-                }
-            }
-        }
+        let breakdown = categorize_factor_ids(extract_factor_ids(m, "factor_info_array").into_iter());
 
         let win_saddle_ids = extract_i64_array(m, "win_saddle_id_array");
 
-        Some(Parent { position_id, card_id, rank, stat_spark, aptitude_spark, unique_spark, skill_sparks, win_saddle_ids })
+        Some(Parent {
+            position_id, card_id, rank,
+            stat_spark: breakdown.stat_spark,
+            aptitude_spark: breakdown.aptitude_spark,
+            unique_spark: breakdown.unique_spark,
+            skill_sparks: breakdown.skill_sparks,
+            win_saddle_ids,
+        })
     }).collect()
 }
 
@@ -269,6 +279,29 @@ enum Factor {
     Unique   { stars: i64 },
     Skill(SkillSparkEntry),
     Unknown,
+}
+
+/// Walks a list of raw `factor_id` ints, keeping the first stat/aptitude/unique
+/// spark seen (the game only ever grants one of each per character) and
+/// collecting every skill spark (white sparks are multi-valued).
+fn categorize_factor_ids(ids: impl Iterator<Item = i64>) -> SparkBreakdown {
+    let mut breakdown = SparkBreakdown::default();
+    for id in ids {
+        match categorize_factor(id) {
+            Factor::Stat { name, stars } if breakdown.stat_spark.is_none() => {
+                breakdown.stat_spark = Some(SparkEntry { name: name.into(), stars });
+            }
+            Factor::Aptitude { name, stars } if breakdown.aptitude_spark.is_none() => {
+                breakdown.aptitude_spark = Some(SparkEntry { name: name.into(), stars });
+            }
+            Factor::Unique { stars } if breakdown.unique_spark.is_none() => {
+                breakdown.unique_spark = Some(SparkEntry { name: "Character Factor".into(), stars });
+            }
+            Factor::Skill(entry) => breakdown.skill_sparks.push(entry),
+            _ => {}
+        }
+    }
+    breakdown
 }
 
 fn categorize_factor(v: i64) -> Factor {
@@ -360,4 +393,124 @@ fn get_array<'a>(entries: &'a [(Value, Value)], key: &str) -> Option<&'a [Value]
         .and_then(|(_, v)| match v { Value::Array(a) => Some(a.as_slice()), _ => None })
 }
 
+/// Extracts every `factor_id` out of a `factor_info_array`-shaped list — an
+/// array of `{factor_id, level}` objects (used by a trained/succession
+/// chara's own committed sparks, and by each reroll candidate's spark list).
+/// Not a flat array of ints, despite the sibling `single_mode_factor_lottery_common`
+/// top-level key being named `factor_id_array` in some contexts — the
+/// per-chara committed spark list is always object-shaped.
+fn extract_factor_ids(entries: &[(Value, Value)], key: &str) -> Vec<i64> {
+    get_array(entries, key).unwrap_or(&[]).iter().filter_map(|v| match v {
+        Value::Map(fm) => get_i64(fm, "factor_id"),
+        _ => None,
+    }).collect()
+}
+
 fn val_i64(v: &Value) -> Option<i64> { v.as_i64() }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn map(pairs: Vec<(&str, Value)>) -> Value {
+        Value::Map(pairs.into_iter().map(|(k, v)| (Value::from(k), v)).collect())
+    }
+
+    fn factor_info(ids: &[i64]) -> Value {
+        Value::Array(ids.iter().map(|&id| map(vec![("factor_id", Value::from(id))])).collect())
+    }
+
+    fn select_entry(lottery_id: Option<i64>, ids: &[i64]) -> Value {
+        let mut pairs = vec![("factor_info_array", factor_info(ids))];
+        if let Some(lid) = lottery_id {
+            pairs.push(("lottery_id", Value::from(lid)));
+        }
+        map(pairs)
+    }
+
+    #[test]
+    fn extract_factor_list_covers_every_categorize_bucket() {
+        // stat=203 (Stamina/3), aptitude=1101 (Turf/1), race=1_000_203 (spark_id 2002, 3 stars),
+        // skill=2_000_412 (skill), scenario=3_000_203, unique=10_000_103 (3 stars)
+        let ids = [203, 1101, 1_000_203, 2_000_412, 3_000_203, 10_000_103];
+        let packet_top = map(vec![(
+            "factor_select_info_array",
+            Value::Array(vec![select_entry(Some(1), &ids), select_entry(Some(2), &[999_999])]),
+        )]);
+        let Value::Map(entries) = packet_top else { unreachable!() };
+
+        let lists = extract_factor_list(&entries);
+        assert_eq!(lists.len(), 2);
+
+        let first = &lists[0];
+        assert_eq!(first.lottery_id, Some(1));
+        assert_eq!(first.sparks.stat_spark.as_ref().map(|s| (s.name.as_str(), s.stars)), Some(("Stamina", 3)));
+        assert_eq!(first.sparks.aptitude_spark.as_ref().map(|s| (s.name.as_str(), s.stars)), Some(("Turf", 1)));
+        assert_eq!(first.sparks.unique_spark.as_ref().map(|s| s.stars), Some(3));
+        assert_eq!(first.sparks.skill_sparks.len(), 3);
+        assert!(first.sparks.skill_sparks.iter().any(|s| s.spark_type == "race"));
+        assert!(first.sparks.skill_sparks.iter().any(|s| s.spark_type == "skill"));
+        assert!(first.sparks.skill_sparks.iter().any(|s| s.spark_type == "scenario"));
+
+        let second = &lists[1];
+        assert_eq!(second.lottery_id, Some(2));
+        assert!(second.sparks.stat_spark.is_none());
+        assert!(second.sparks.aptitude_spark.is_none());
+        assert!(second.sparks.unique_spark.is_none());
+        assert!(second.sparks.skill_sparks.is_empty());
+    }
+
+    #[test]
+    fn find_factor_lottery_common_top_level_and_nested() {
+        let top = map(vec![("single_mode_factor_lottery_common", map(vec![("a", Value::from(1))]))]);
+        let Value::Map(entries) = top else { unreachable!() };
+        assert!(find_factor_lottery_common(&entries).is_some());
+
+        let nested = map(vec![("data", map(vec![("single_mode_factor_lottery_common", map(vec![("a", Value::from(1))]))]))]);
+        let Value::Map(entries) = nested else { unreachable!() };
+        assert!(find_factor_lottery_common(&entries).is_some());
+    }
+
+    #[test]
+    fn find_factor_lottery_common_returns_none_when_absent() {
+        let top = map(vec![("unrelated_key", Value::from(1))]);
+        let Value::Map(entries) = top else { unreachable!() };
+        assert!(find_factor_lottery_common(&entries).is_none());
+    }
+
+    #[test]
+    fn extract_finish_summary_reads_object_shaped_factor_info_array() {
+        // The committed spark list is `factor_info_array` — an array of
+        // `{factor_id, level}` objects, same shape as a reroll candidate's
+        // own list — not a flat `factor_id_array` of ints.
+        let target = map(vec![
+            ("card_id", Value::from(12345)),
+            ("factor_info_array", factor_info(&[203, 1101, 2_000_412])),
+        ]);
+        let Value::Map(entries) = target else { unreachable!() };
+        let summary = extract_finish_summary(&entries);
+        assert_eq!(summary.card_id, Some(12345));
+        assert_eq!(summary.stat_spark.as_ref().map(|s| s.name.as_str()), Some("Stamina"));
+        assert_eq!(summary.aptitude_spark.as_ref().map(|s| s.name.as_str()), Some("Turf"));
+        assert_eq!(summary.skill_sparks.len(), 1);
+    }
+
+    #[test]
+    fn extract_parents_reads_object_shaped_factor_info_array() {
+        let target = map(vec![(
+            "succession_chara_array",
+            Value::Array(vec![map(vec![
+                ("position_id", Value::from(10)),
+                ("card_id", Value::from(101401)),
+                ("factor_info_array", factor_info(&[203, 1101])),
+            ])]),
+        )]);
+        let Value::Map(entries) = target else { unreachable!() };
+        let parents = extract_parents(&entries);
+        assert_eq!(parents.len(), 1);
+        assert_eq!(parents[0].stat_spark.as_ref().map(|s| s.name.as_str()), Some("Stamina"));
+        assert_eq!(parents[0].aptitude_spark.as_ref().map(|s| s.name.as_str()), Some("Turf"));
+    }
+}
