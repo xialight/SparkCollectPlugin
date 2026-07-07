@@ -5,9 +5,6 @@ Pretty Derby that automatically submits your career results — and every spark
 list you see while rerolling — to the umaspark worker API using your personal
 token.
 
-This is a from-scratch v2 build (new repo, not a fork of the original
-`SparkCollectPlugin`), built to support the game's spark-reroll feature.
-
 ## How it works
 
 The plugin hooks `Gallop.HttpHelper.DecompressResponse` to intercept game API
