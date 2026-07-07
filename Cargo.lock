@@ -671,7 +671,7 @@ checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 
 [[package]]
 name = "spark_collect_plugin"
-version = "0.3.0"
+version = "2.0.0"
 dependencies = [
  "hachimi_plugin_sdk",
  "java-properties",
